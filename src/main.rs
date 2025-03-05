@@ -1,6 +1,6 @@
 use std::io;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum OpKind {
     Add,
     Sub,
@@ -19,74 +19,68 @@ impl OpKind {
     }
 }
 
-#[derive(Debug, PartialEq)]
-enum TokenKind {
-    Value,
-    Op(OpKind),
-    Delimiter,
-}
-#[derive(Debug)]
-struct Token {
-    kind: TokenKind,
-    value: String,
-}
-#[derive(Debug)]
-struct Lexer {
-    tokens: Vec<Token>,
-    pos: usize,
+#[derive(Debug, Clone, PartialEq)]
+enum DKind {
+    Open,
+    Close,
 }
 
-fn to_lexer(input: String) -> Lexer {
+#[derive(Debug, Clone, PartialEq)]
+enum Token {
+    Value(usize),
+    Op(OpKind),
+    Delimiter(DKind),
+}
+
+fn to_lexer(input: String) -> Vec<Token> {
     let mut tokens: Vec<Token> = Vec::new();
-    let mut tta = String::new();
-    for char in input.chars() {
-        match char {
+    let mut input_iter = input.chars();
+    let mut char = input_iter.next();
+
+    while let Some(c) = char {
+        match c {
             '+' | '-' | '*' | '/' => {
                 // add last token
-                if !tta.is_empty() {
-                    tokens.push(Token {
-                        kind: TokenKind::Value,
-                        value: tta,
-                    });
-                    tta = String::new();
-                }
-                tokens.push(Token {
-                    kind: TokenKind::Op(OpKind::from_char(char)),
-                    value: String::from(char),
-                });
+                tokens.push(Token::Op(OpKind::from_char(c)));
+                println!("ici");
+                char = input_iter.next();
             }
             '(' | ')' => {
-                if !tta.is_empty() {
-                    tokens.push(Token {
-                        kind: TokenKind::Value,
-                        value: tta,
-                    });
-                    tta = String::new();
-                    tokens.push(Token {
-                        kind: TokenKind::Delimiter,
-                        value: String::from(char),
-                    });
-                }
+                match c {
+                    '(' => tokens.push(Token::Delimiter(DKind::Open)),
+                    ')' => tokens.push(Token::Delimiter(DKind::Close)),
+                    _ => panic!("should be open or closed parenthesis"),
+                };
+                char = input_iter.next();
             }
             '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => {
-                tta.push(char);
+                let mut tta = String::from(c);
+                dbg!(&tta);
+                loop {
+                    char = input_iter.next();
+                    match char {
+                        Some(nc) => {
+                            if nc.is_numeric() {
+                                tta.push(nc)
+                            } else {
+                                break;
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                tokens.push(Token::Value(tta.parse().unwrap()));
             }
             _ => {
-                if char.is_alphabetic() {
+                if c.is_alphabetic() {
                     todo!("letters handling")
                 }
+                char = input_iter.next();
             }
         };
     }
 
-    // empty the tta buffer before exiting
-    if !tta.is_empty() {
-        tokens.push(Token {
-            kind: TokenKind::Value,
-            value: tta,
-        });
-    };
-    Lexer { tokens, pos: 0 }
+    tokens
 }
 
 #[derive(Debug, Clone)]
@@ -102,92 +96,138 @@ struct Expression {
 }
 
 // TODO: add precedence for mult & div
-fn parser(mut lx: Lexer) -> Expression {
-    let mut left: Option<ExpOrValue> = None;
-
-    while lx.pos < lx.tokens.len() {
-        let t = lx.tokens.get(lx.pos).unwrap();
-
-        match &t.kind {
-            TokenKind::Value => {
-                if left.is_some() {
-                    panic!("cannot have two values in a row");
-                } else {
-                    left = Some(ExpOrValue::Val(t.value.parse().unwrap()));
-                    lx.pos += 1;
-                }
+fn parser(mut lx: Vec<Token>) -> ExpOrValue {
+    println!("appel de parser avec lx: {:?}", &lx);
+    //handle end of lexer
+    if lx.len() == 1 {
+        match lx.pop().unwrap() {
+            Token::Value(v) => {
+                return ExpOrValue::Val(v);
             }
-            TokenKind::Op(kind) => {
-                if let Some(left) = &left {
-                    lx.pos += 1;
-                    let op = kind.clone();
-                    if lx.pos == lx.tokens.len() - 1
-                        && lx.tokens.get(lx.pos).unwrap().kind == TokenKind::Value
-                    {
-                        let next = lx.tokens.get(lx.pos).unwrap();
+            _ => panic!("lexex with only one item should contain a value"),
+        }
+    }
 
-                        if op == OpKind::Div || op == OpKind::Mul {
-                            return Expression {
-                                left: ExpOrValue::Val(next.value.parse().unwrap()),
-                                right: left.clone(),
-                                op,
-                            };
-                        } else {
-                            return Expression {
-                                left: left.clone(),
-                                right: ExpOrValue::Val(next.value.parse().unwrap()),
-                                op,
-                            };
-                        }
-                    } else {
-                        let rest = Box::new(parser(lx));
-                        return Expression {
-                            left: left.clone(),
-                            right: ExpOrValue::Exp(rest),
-                            op,
-                        };
-                    }
-                } else {
-                    panic!("Parser failed: cannot have operator without left value");
-                }
+    //searching for plus or minus operators
+    println!("lx avant de chercher +-: {:?}", &lx);
+    let pm_pos = lx
+        .iter()
+        .position(|k| *k == Token::Op(OpKind::Add) || *k == Token::Op(OpKind::Sub));
+
+    println!("lx apres de chercher +-: {:?}", &lx);
+    println!("pm_pos:{:?}", &pm_pos);
+    // if found +- operators then compute left&right vectors
+    if let Some(pos) = pm_pos {
+        let right = lx.split_off(pos + 1);
+        println!("right apres split: {:?}", &right);
+
+        if let Token::Op(op) = lx.get(pos).unwrap().clone() {
+            lx.pop();
+            let left = lx;
+            println!("left apres split et pop: {:?}", &left);
+
+            ExpOrValue::Exp(Box::new(Expression {
+                left: (parser(left)),
+                right: (parser(right)),
+                op,
+            }))
+        } else {
+            //this could not be before of previous serach
+            panic!("should be operators, opKind should be Add or Sub")
+        }
+    } else {
+        // +- not found, processing */ operators
+        //
+        dbg!(&lx);
+        let md_pos = lx
+            .iter()
+            .position(|k| *k == Token::Op(OpKind::Mul) || *k == Token::Op(OpKind::Div));
+
+        println!("md_pos:{:?}", &md_pos);
+        // if found */ operators then compute left&right vectors
+        if let Some(pos) = md_pos {
+            let right = lx.split_off(pos + 1);
+
+            if let Token::Op(op) = lx.get(pos).unwrap().clone() {
+                lx.pop();
+                let left = lx;
+
+                ExpOrValue::Exp(Box::new(Expression {
+                    left: (parser(left)),
+                    right: (parser(right)),
+                    op,
+                }))
+            } else {
+                //this could not be before of previous serach
+                panic!("should be operators, opKind should be Div or Mul")
             }
-            TokenKind::Delimiter => {
-                println!("token is Delimiter");
-                if let Some(_) = left {
-                    todo!()
-                } else {
-                    todo!()
-                }
+        } else {
+            // +- not found, normal procesing
+            panic!("expression should contain at least one operator");
+        }
+    }
+}
+
+fn compute(ex: ExpOrValue) -> usize {
+    match ex {
+        ExpOrValue::Val(val) => val,
+        ExpOrValue::Exp(exp) => {
+            let left = match exp.left {
+                ExpOrValue::Val(val) => val,
+                ExpOrValue::Exp(exp) => compute(ExpOrValue::Exp(exp)),
+            };
+            let right = match exp.right {
+                ExpOrValue::Val(val) => val,
+                ExpOrValue::Exp(exp) => compute(ExpOrValue::Exp(exp)),
+            };
+            match exp.op {
+                OpKind::Add => left + right,
+                OpKind::Sub => left - right,
+                OpKind::Mul => left * right,
+                OpKind::Div => left / right,
             }
         }
     }
-    panic!("Parser failed");
 }
-
-fn compute(ex: Expression) -> usize {
-    let left = match ex.left {
-        ExpOrValue::Val(val) => val,
-        ExpOrValue::Exp(exp) => compute(*exp),
-    };
-    let right = match ex.right {
-        ExpOrValue::Val(val) => val,
-        ExpOrValue::Exp(exp) => compute(*exp),
-    };
-    match ex.op {
-        OpKind::Add => left + right,
-        OpKind::Sub => left - right,
-        OpKind::Mul => left * right,
-        OpKind::Div => left / right,
-    }
+fn compute_string(st: &str) -> usize {
+    let lx = to_lexer(st.to_string());
+    let exp = parser(lx);
+    compute(exp)
 }
 fn main() {
     let mut input = String::new();
 
     println!("entrez une ligne");
     io::stdin().read_line(&mut input).unwrap();
-    let lx = to_lexer(input);
+    let lx = dbg!(to_lexer(input));
     let exp = dbg!(parser(lx));
     let res = dbg!(compute(exp));
 
     // println!("Exp: {:?}", exp);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add() {
+        let result = compute_string("1+1");
+        assert_eq!(result, 2);
+    }
+    #[test]
+    fn mult_prio() {
+        let result = compute_string("1+2*3");
+        assert_eq!(result, 7);
+    }
+    #[test]
+    fn mult_prio_rev() {
+        let result = compute_string("1*2+3");
+        assert_eq!(result, 5);
+    }
+    #[test]
+    fn parenthesis_prio() {
+        let result = compute_string("(1+2)*3+4");
+        assert_eq!(result, 13);
+    }
 }
